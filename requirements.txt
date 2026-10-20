@@ -1,0 +1,15 @@
+
+fastapi
+uvicorn[standard]
+streamlit
+pandas
+numpy
+plotly
+duckdb
+groq
+python-dotenv
+pydantic
+pytest
+httpx
+sqlglot
+langgraph
