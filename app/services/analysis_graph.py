@@ -4,10 +4,14 @@ from typing import Any, TypedDict
 import pandas as pd
 from langgraph.graph import END, START, StateGraph
 
-from app.services.ai_analyst import generate_sql, explain_result
-from app.services.sql_engine import execute_sql
+from app.services.ai_analyst import (
+    generate_sql,
+    generate_sql_multi,
+    explain_result,
+)
+from app.services.sql_engine import execute_sql, execute_sql_multi
+from app.services.dataset_store import get_dataset, get_datasets
 from functools import lru_cache
-from app.services.dataset_store import get_dataset
 
 from langgraph.checkpoint.memory import MemorySaver
 import operator
@@ -22,15 +26,16 @@ class AnalysisState(TypedDict):
     last_error: str | None
     attempts: int
     max_attempts: int
+    multi_file: bool
     history: Annotated[list[dict[str, str]], operator.add]
 
 
 
+
 def generate_query(state: AnalysisState) -> dict:
-    """Generate SQL with prior conversation context when available."""
+    """Generate SQL using the current session's dataset schema."""
 
     history = state.get("history", [])[-5:]
-
     contextual_question = state["question"]
 
     if history:
@@ -48,11 +53,20 @@ def generate_query(state: AnalysisState) -> dict:
             f"Current question: {state['question']}"
         )
 
-    sql = generate_sql(
-        df=get_dataset(state["dataset_id"]),
-        question=contextual_question,
-        previous_error=state["last_error"],
-    )
+    if state.get("multi_file", False):
+        datasets = get_datasets(state["dataset_id"])
+        sql = generate_sql_multi(
+            datasets=datasets,
+            question=contextual_question,
+            previous_error=state["last_error"],
+        )
+    else:
+        df = get_dataset(state["dataset_id"])
+        sql = generate_sql(
+            df=df,
+            question=contextual_question,
+            previous_error=state["last_error"],
+        )
 
     return {
         "sql": sql,
@@ -62,22 +76,28 @@ def generate_query(state: AnalysisState) -> dict:
 
 
 
+
 def execute_query(state: AnalysisState) -> dict:
-    """Execute SQL using the existing validation and execution layer."""
+    """Execute SQL against the uploaded single or multiple datasets."""
 
     try:
-        df = get_dataset(state["dataset_id"])
-        result = execute_sql(df, state["sql"])
+        if state.get("multi_file", False):
+            datasets = get_datasets(state["dataset_id"])
+            result = execute_sql_multi(datasets, state["sql"])
+        else:
+            df = get_dataset(state["dataset_id"])
+            result = execute_sql(df, state["sql"])
+
         return {
             "execution_result": result,
             "last_error": None,
         }
+
     except Exception as exc:
         return {
             "execution_result": None,
             "last_error": str(exc)[:500],
         }
-
 
 def route_after_execution(state: AnalysisState) -> str:
     """Retry once after an execution error, otherwise stop or explain."""

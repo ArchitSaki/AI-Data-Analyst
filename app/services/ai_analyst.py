@@ -4,15 +4,17 @@ import json
 import pandas as pd
 import uuid
 from app.services.llm_service import ask_groq
-from app.services.sql_engine import execute_sql
-from app.services.dataset_store import save_dataset
+from app.services.sql_engine import execute_sql, normalize_table_name
 from app.services.charting import create_chart
 from app.services.business_insights import generate_business_insights
 import re
+
 from app.services.dataset_store import (
     save_dataset,
+    save_datasets,
     get_business_insights,
 )
+
 
 from app.services.analytics import (
     detect_anomalies,
@@ -20,14 +22,15 @@ from app.services.analytics import (
     AnalyticsError,
 )
 
+
 SQL_SYSTEM_PROMPT = """
 You are the SQL planning component of an AI data analyst.
 
 Convert the user's natural-language question into one DuckDB SQL query.
 
 Rules:
-1. The only available data table is uploaded_data.
-2. Use only columns that exist in the provided schema.
+1. Use only the tables explicitly listed in the provided schema.
+2. Use only columns that exist in those tables.
 3. Return exactly one SQL query, with no Markdown or explanation.
 4. Generate read-only SELECT queries only.
 5. Never use INSERT, UPDATE, DELETE, DROP, CREATE, or ALTER.
@@ -41,9 +44,15 @@ Rules:
 11. Do not assume that a column named revenue, amount, price, or date
     has a meaning beyond what the schema indicates.
 12. Keep result sets reasonably small.
+13. When combining tables, use JOINs only when the question requires them.
+14. Join tables using compatible columns supported by the schema.
+    Do not invent relationships or join keys.
+15. Use table aliases when they improve readability.
+16. Never reference a table that is not listed in the supplied schema.
 
 Output only the SQL query.
 """
+
 
 
 EXPLANATION_SYSTEM_PROMPT = """
@@ -118,6 +127,64 @@ def generate_sql(
         system_prompt=SQL_SYSTEM_PROMPT,
         user_prompt=json.dumps(prompt, ensure_ascii=False),
     )
+
+
+
+def get_multi_schema(
+    datasets: dict[str, pd.DataFrame],
+) -> list[dict]:
+    """Describe each uploaded table without sending its full data."""
+
+    tables = []
+    used_names = set()
+
+    for file_name, df in datasets.items():
+        table_name = normalize_table_name(file_name)
+
+        if table_name in used_names:
+            raise ValueError(
+                f"Multiple files resolve to the table name '{table_name}'. "
+                "Rename the files to make their names unique."
+            )
+
+        used_names.add(table_name)
+
+        tables.append(
+            {
+                "table_name": table_name,
+                "source_file": file_name,
+                "columns": get_schema(df),
+            }
+        )
+
+    return tables
+
+
+def generate_sql_multi(
+    datasets: dict[str, pd.DataFrame],
+    question: str,
+    previous_error: str | None = None,
+) -> str:
+    """Generate SQL using the schemas of all uploaded CSV files."""
+
+    prompt = {
+        "question": question,
+        "tables": get_multi_schema(datasets),
+    }
+
+    if previous_error:
+        prompt["previous_attempt_error"] = previous_error
+        prompt["instruction"] = (
+            "Correct the previous query based on the error. "
+            "Use only the provided tables and columns. "
+            "Return a new SQL query, not an explanation."
+        )
+
+    return ask_groq(
+        system_prompt=SQL_SYSTEM_PROMPT,
+        user_prompt=json.dumps(prompt, ensure_ascii=False, default=str),
+    )
+
 
 
 def explain_result(
@@ -385,6 +452,7 @@ def analyze_question(
     df: pd.DataFrame,
     question: str,
     conversation_id: str | None = None,
+    datasets: dict[str, pd.DataFrame] | None = None,
 ) -> dict:
     """Validate input and run the checkpointed LangGraph workflow."""
 
@@ -400,7 +468,12 @@ def analyze_question(
     if not conversation_id:
         conversation_id = str(uuid.uuid4())
 
-    save_dataset(conversation_id, df)
+    multi_file = datasets is not None and len(datasets) > 1
+
+    if multi_file:
+        save_datasets(conversation_id, datasets)
+    else:
+        save_dataset(conversation_id, df)
 
     # Route explicit anomaly requests to deterministic statistical analysis.
     question_lower = question.lower()
@@ -419,7 +492,7 @@ def analyze_question(
         )
     )
 
-    if anomaly_request:
+    if not multi_file and anomaly_request:
         return _analyze_anomalies(df, question, conversation_id)
 
     
@@ -438,7 +511,7 @@ def analyze_question(
         )
     )
 
-    if quality_request:
+    if not multi_file and quality_request:
         return _analyze_data_quality(
             df,
             question,
@@ -470,7 +543,7 @@ def analyze_question(
     )
 )
 
-    if business_insights_request:
+    if not multi_file and business_insights_request:
         cached_report = get_business_insights(conversation_id)
 
         if cached_report is None:
@@ -511,6 +584,7 @@ def analyze_question(
             "last_error": None,
             "attempts": 0,
             "max_attempts": 2,
+            "multi_file": multi_file,
         },
         config={
             "configurable": {

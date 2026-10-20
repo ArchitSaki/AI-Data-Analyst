@@ -17,26 +17,51 @@ from app.services.dataset_store import (
 router = APIRouter(prefix="/api", tags=["AI Analyst"])
 
 
+
 @router.post("/ask")
 async def ask_question(
     question: str = Form(...),
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
+    files: list[UploadFile] | None = File(default=None),
     conversation_id: str | None = Form(default=None),
 ):
-    if not file.filename or not file.filename.lower().endswith(".csv"):
+    uploads = files or ([file] if file is not None else [])
+
+    if not uploads:
         raise HTTPException(
             status_code=400,
-            detail="Please upload a CSV file.",
+            detail="Please upload at least one CSV file.",
         )
 
     try:
-        contents = await file.read()
-        dataframe = load_csv(contents)
+        datasets = {}
+
+        for uploaded in uploads:
+            if (
+                not uploaded.filename
+                or not uploaded.filename.lower().endswith(".csv")
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="All uploaded files must be CSV files.",
+                )
+
+            if uploaded.filename in datasets:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Duplicate filename: {uploaded.filename}",
+                )
+
+            contents = await uploaded.read()
+            datasets[uploaded.filename] = load_csv(contents)
+
+        first_dataframe = next(iter(datasets.values()))
 
         return analyze_question(
-            dataframe,
+            first_dataframe,
             question,
             conversation_id=conversation_id,
+            datasets=datasets if len(datasets) > 1 else None,
         )
 
     except CSVValidationError as exc:
@@ -49,7 +74,8 @@ async def ask_question(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     finally:
-        await file.close()
+        for uploaded in uploads:
+            await uploaded.close()
 
 
 @router.post("/insights")

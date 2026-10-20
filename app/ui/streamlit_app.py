@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from app.services.data_loader import CSVValidationError, load_csv
 
 API_URL = "http://127.0.0.1:8000/api/ask"
 
@@ -379,6 +380,7 @@ def build_result_details(result):
         "insight_count": result.get("insight_count", 0),
         "row_count": result.get("row_count", 0),
         "column_count": result.get("column_count", 0),
+        "business_summary": result.get("business_summary"),
     }
 
 
@@ -401,41 +403,102 @@ st.caption(
 with st.sidebar:
     st.header("Dataset")
 
-    uploaded_file = st.file_uploader(
-        "Upload a CSV file",
+    
+    uploaded_files = st.file_uploader(
+        "Upload CSV files",
         type=["csv"],
-        help="Upload the dataset you want to analyze.",
+        accept_multiple_files=True,
+        help="Upload one or more CSV files to analyze.",
     )
 
-    if uploaded_file is not None:
-        file_bytes = uploaded_file.getvalue()
+    selected_file = None
+    preview_df = None
 
-        # Reset the conversation when a different file is uploaded.
+    
+    selected_file = None
+    preview_df = None
+    valid_files = {}
+
+    if uploaded_files:
+        for uploaded in uploaded_files:
+            try:
+                file_bytes = uploaded.getvalue()
+                dataframe = load_csv(file_bytes)
+
+                if dataframe.empty:
+                    st.warning(
+                        f"{uploaded.name}: the CSV contains no data rows."
+                    )
+                    continue
+
+                valid_files[uploaded.name] = {
+                    "bytes": file_bytes,
+                    "dataframe": dataframe,
+                }
+
+            except CSVValidationError as exc:
+                st.warning(f"{uploaded.name}: {exc}")
+
+            except Exception as exc:
+                st.warning(
+                    f"Could not load {uploaded.name}: {exc}"
+                )
+
+    if valid_files:
+        analysis_mode = st.radio(
+            "Analysis mode",
+            options=["Single dataset", "All datasets"],
+            index=0,
+            help=(
+                "Single dataset analyzes one CSV. All datasets lets "
+                "the AI query across uploaded CSVs."
+            ),
+        )
+
+        selected_name = st.selectbox(
+            "Choose a dataset to preview",
+            options=list(valid_files.keys()),
+        )
+
+        selected_file = valid_files[selected_name]
+        preview_df = selected_file["dataframe"]
+
+        st.session_state.active_analysis_mode = analysis_mode
+        st.session_state.active_datasets = valid_files
+
+        # A changed dataset selection or file set starts a fresh conversation.
+        current_signature = tuple(
+            (name, item["bytes"])
+            for name, item in valid_files.items()
+        )
+
         if (
-            st.session_state.uploaded_file_name != uploaded_file.name
-            or st.session_state.uploaded_file_bytes != file_bytes
+            st.session_state.get("dataset_signature")
+            != current_signature
+            or st.session_state.get("last_analysis_mode")
+            != analysis_mode
         ):
-            st.session_state.uploaded_file_name = uploaded_file.name
-            st.session_state.uploaded_file_bytes = file_bytes
+            st.session_state.dataset_signature = current_signature
+            st.session_state.last_analysis_mode = analysis_mode
+            st.session_state.uploaded_file_name = selected_name
+            st.session_state.uploaded_file_bytes = selected_file["bytes"]
             st.session_state.conversation_id = None
             st.session_state.messages = []
             st.session_state.business_insights = None
 
-        try:
-            preview_df = pd.read_csv(
-                io.BytesIO(file_bytes)
+        else:
+            st.session_state.uploaded_file_name = selected_name
+            st.session_state.uploaded_file_bytes = selected_file["bytes"]
+
+        st.success(f"Previewing: {selected_name}")
+        st.metric("Rows", f"{len(preview_df):,}")
+        st.metric("Columns", len(preview_df.columns))
+
+        if analysis_mode == "All datasets":
+            st.info(
+                f"{len(valid_files)} datasets available for cross-file analysis."
             )
 
-            st.success(f"Loaded: {uploaded_file.name}")
-            st.metric("Rows", f"{len(preview_df):,}")
-            st.metric("Columns", len(preview_df.columns))
-
-        except Exception as exc:
-            preview_df = None
-            st.error(f"Could not preview this CSV: {exc}")
-
-    else:
-        preview_df = None
 
     if st.button(
         "＋ New conversation",
@@ -541,7 +604,7 @@ if preview_df is not None:
 st.divider()
 st.subheader("Ask your data")
 
-if not st.session_state.uploaded_file_bytes:
+if not st.session_state.get("active_datasets"):
     st.info(
         "Upload a CSV from the sidebar to start analyzing your data."
     )
@@ -561,7 +624,7 @@ for message in st.session_state.messages:
 
 question = st.chat_input(
     "Ask a question about your dataset...",
-    disabled=not bool(st.session_state.uploaded_file_bytes),
+    disabled=not bool(st.session_state.get("active_datasets")),
 )
 
 
@@ -583,67 +646,64 @@ if question:
     with st.chat_message("assistant"):
         with st.spinner("Analyzing your data..."):
             try:
-                files = {
-                    "file": (
-                        st.session_state.uploaded_file_name,
-                        st.session_state.uploaded_file_bytes,
-                        "text/csv",
-                    )
-                }
+                active_mode = st.session_state.get(
+                    "active_analysis_mode",
+                    "Single dataset",
+                )
 
-                form_data = {
-                    "question": question,
-                }
-
-                if st.session_state.conversation_id:
-                    form_data["conversation_id"] = (
-                        st.session_state.conversation_id
-                    )
-
+                if active_mode == "All datasets":
+                    files = [
+                        (
+                            "files",
+                            (name, item["bytes"], "text/csv"),
+                        )
+                        for name, item in st.session_state.active_datasets.items()
+                    ]
+                else:
+                    files = {
+                        "file": (
+                            st.session_state.uploaded_file_name,
+                            st.session_state.uploaded_file_bytes,
+                            "text/csv",
+                        )
+                    }
+                
                 response = requests.post(
-                    API_URL,
-                    files=files,
-                    data=form_data,
-                    timeout=120,
+                API_URL,
+                files=files,
+                data={
+                    "question": question,
+                    "conversation_id": st.session_state.conversation_id,
+                    },
+                timeout=120,
                 )
 
                 if not response.ok:
-                    try:
-                        error_detail = response.json().get(
-                            "detail",
-                            response.text,
-                        )
-                    except ValueError:
-                        error_detail = response.text
-
                     st.error(
-                        f"Analysis failed: {error_detail}"
+                        f"API error ({response.status_code}): {response.text}"
                     )
+                    st.stop()
 
-                else:
-                    result = response.json()
+                result = response.json()
 
-                    st.session_state.conversation_id = (
-                        result["conversation_id"]
-                    )
+                st.session_state.conversation_id = result.get(
+                    "conversation_id",
+                    st.session_state.conversation_id,
+                )
 
-                    answer = result.get(
-                        "answer",
-                        "No answer returned.",
-                    )
+                answer = result.get("answer", "No answer was returned.")
+                details = build_result_details(result)
 
-                    details = build_result_details(result)
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": answer,
+                        "details": details,
+                    }
+                )
 
-                    st.markdown(answer)
-                    render_result_details(details)
-
-                    st.session_state.messages.append(
-                        {
-                            "role": "assistant",
-                            "content": answer,
-                            "details": details,
-                        }
-                    )
+                st.markdown(answer)
+                render_result_details(details)
 
             except requests.RequestException as exc:
                 st.error(
