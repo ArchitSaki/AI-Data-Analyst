@@ -1,12 +1,13 @@
 import io
-
+import os
 import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
 from app.services.data_loader import CSVValidationError, load_csv
 
-API_URL = "http://127.0.0.1:8000/api/ask"
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+API_URL = f"{API_BASE_URL}/api/ask"
 
 st.set_page_config(
     page_title="AI Data Analyst",
@@ -532,7 +533,7 @@ if preview_df is not None and st.session_state.business_insights is None:
 
         with st.spinner("Generating business insights..."):
             response = requests.post(
-                "http://127.0.0.1:8000/api/insights",
+                f"{API_BASE_URL}/api/insights",
                 files=insight_files,
                 data=insight_form,
                 timeout=120,
