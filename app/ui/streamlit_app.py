@@ -1,12 +1,30 @@
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+import plotly.graph_objects as go
+import requests
+
+from app.services.data_loader import CSVValidationError, load_csv
+
 import io
 import os
 import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
-from app.services.data_loader import CSVValidationError, load_csv
+from dotenv import load_dotenv
 
-API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+load_dotenv()
+
+API_BASE_URL = (
+    st.secrets.get("API_BASE_URL", "")
+    or os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+).rstrip("/")
+
 API_URL = f"{API_BASE_URL}/api/ask"
 
 st.set_page_config(
