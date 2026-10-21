@@ -101,6 +101,24 @@ It also includes business insights, data quality checks, anomaly detection, char
 
 Additional libraries are used for charting, data quality analysis, and anomaly detection.
 
+
+## 🚀 Project Demo
+
+Explore the live application and try AI-powered data analysis.
+
+- **Live Application:** [AI Data Analyst](https://ai-data-analyst-ruddapu5uz5r9kwuou8zgw.streamlit.app/)
+- **Source Code:** [GitHub Repository](https://github.com/ArchitSaki/AI-Data-Analyst)
+- **Video Demonstration:** [Demo Video](https://drive.google.com/file/d/1lRpLwpYXTGQXJlrrWu9xn5zXup9x0A-i/view?usp=sharing)
+
+### Try It Out
+
+1. Open the live application.
+2. Upload a CSV dataset.
+3. Ask questions about your data in natural language.
+4. Explore generated SQL queries, analytical results, visualizations, and business insights.
+
+
+
 ## System Architecture
 
 The application follows a modular architecture that separates API handling, data processing, AI-assisted analysis, SQL execution, and analytical services.
