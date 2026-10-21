@@ -6,4 +6,3 @@ __pycache__/
 .git/
 .pytest_cache/
 .streamlit/secrets.toml
-data/uploads/
